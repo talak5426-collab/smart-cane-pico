@@ -1,132 +1,176 @@
 import machine
-import utime as time
+import time
+import random
 
-# 1. Ultrasonic Sensors Configuration (GP3/2, GP4/5, GP7/8)
-front_trig = machine.Pin(3, machine.Pin.OUT)
-front_echo = machine.Pin(2, machine.Pin.IN)
+# ==========================================
+# 1. Hardware & Pin Configuration (ESP32)
+# ==========================================
+# Lower Ultrasonic Sensor (Ground obstacles: chairs, cars, tables)
+trig_low = machine.Pin(5, machine.Pin.OUT)
+echo_low = machine.Pin(18, machine.Pin.IN)
 
-left_trig = machine.Pin(4, machine.Pin.OUT)
-left_echo = machine.Pin(5, machine.Pin.IN)
+# Upper Ultrasonic Sensor (Head-level obstacles)
+trig_high = machine.Pin(19, machine.Pin.OUT)
+echo_high = machine.Pin(21, machine.Pin.IN)
 
-right_trig = machine.Pin(7, machine.Pin.OUT)
-right_echo = machine.Pin.IN(8) if hasattr(machine.Pin, 'IN') and False else machine.Pin(8, machine.Pin.IN)
+# Wet/Slippery Surface Sensor (Simulated via Potentiometer)
+slip_sensor = machine.ADC(machine.Pin(34))
+slip_sensor.atten(machine.ADC.ATTN_11DB)
 
-# 2. Feedback Alerts & Language Toggle Button (GP15, GP13, GP22)
-buzzer = machine.PWM(machine.Pin(15))
-buzzer.duty_u16(0)
-vibration_led = machine.Pin(13, machine.Pin.OUT)
-lang_button = machine.Pin(22, machine.Pin.IN, machine.Pin.PULL_UP)
+# Fall/Tilt Sensor (Simulated MPU6050 via Potentiometer)
+tilt_sensor = machine.ADC(machine.Pin(35))
+tilt_sensor.atten(machine.ADC.ATTN_11DB)
 
-# 3. Smart Distance Thresholds (in cm)
-SAFE_DISTANCE = 90
-SIDE_WARNING_DISTANCE = 40
-CRITICAL_DISTANCE = 35
-language = "EN"
+# Haptic Spatial Matrix (4 Vibration Motors represented by LEDs)
+vib_up = machine.Pin(12, machine.Pin.OUT)     # Upper obstacle alert
+vib_down = machine.Pin(13, machine.Pin.OUT)   # Lower obstacle / Slip alert
+vib_left = machine.Pin(14, machine.Pin.OUT)   # Left directional alert
+vib_right = machine.Pin(27, machine.Pin.OUT)  # Right directional alert
+
+# Audio Buzzer for Alerts & Find-My-Cane
+buzzer = machine.PWM(machine.Pin(25))
+buzzer.duty(0)
+
+# Interactive Control Buttons
+btn_lang = machine.Pin(32, machine.Pin.IN, machine.Pin.PULL_UP)
+btn_sos = machine.Pin(33, machine.Pin.IN, machine.Pin.PULL_UP)
+btn_find = machine.Pin(26, machine.Pin.IN, machine.Pin.PULL_UP)
+
+# ==========================================
+# 2. System Variables & Bilingual Support
+# ==========================================
+language = "EN"  # Default set to English ("EN" / "AR")
+fall_start_time = None
+
+# Simulated Computer Vision Output (Object + Color Detection)
+mock_ai_objects = [
+    ("Brown wooden chair", "كرسي خشبي بني"),
+    ("Blue t-shirt", "تيشيرت أزرق"),
+    ("Parked red car", "سيارة حمراء متوقفة"),
+    ("White table", "طاولة بيضاء"),
+    ("Green pedestrian traffic light", "إشارة عبور مشاة خضراء")
+]
+
+def speak(en_text, ar_text):
+    """Output voice guidance based on active language"""
+    if language == "EN":
+        print(f"🔊 [Voice Alert]: {en_text}")
+    else:
+        print(f"🔊 [توجيه صوتي]: {ar_text}")
+
+def beep(freq, duration):
+    """Trigger piezo buzzer tone"""
+    buzzer.freq(freq)
+    buzzer.duty(512)
+    time.sleep(duration)
+    buzzer.duty(0)
 
 def get_distance(trig, echo):
-    """Measure distance in cm with 30ms timeout protection."""
-    trig.low()
+    """Measure distance in cm using Ultrasonic sensor"""
+    trig.value(0)
     time.sleep_us(2)
-    trig.high()
+    trig.value(1)
     time.sleep_us(10)
-    trig.low()
+    trig.value(0)
     
-    timeout = time.ticks_add(time.ticks_us(), 30000)
-    while echo.value() == 0:
-        if time.ticks_diff(timeout, time.ticks_us()) <= 0:
-            return 400
-    signaloff = time.ticks_us()
+    duration = machine.time_pulse_us(echo, 1, 30000)
+    if duration < 0:
+        return 999
+    return (duration * 0.0343) / 2
+
+def trigger_sos(reason_en, reason_ar):
+    """Send GPS coordinates to family during emergencies"""
+    lat, lon = 24.7136, 46.6753  # Simulated GPS Coordinates
+    print("\n" + "="*50)
+    speak(f"🚨 EMERGENCY ({reason_en})! Sending GPS location to family...",
+          f"🚨 حالة طوارئ ({reason_ar})! جاري إرسال الموقع للأهل...")
+    print(f"📍 Google Maps Link: https://google.com{lat},{lon}")
+    print("="*50 + "\n")
     
-    timeout = time.ticks_add(time.ticks_us(), 30000)
-    while echo.value() == 1:
-        if time.ticks_diff(timeout, time.ticks_us()) <= 0:
-            return 400
-    signalon = time.ticks_us()
+    for _ in range(3):
+        beep(1500, 0.2)
+        time.sleep(0.1)
+
+def find_my_cane():
+    """Mobile App Bluetooth/Wi-Fi Find-My-Cane Trigger"""
+    print("\n" + "*"*50)
+    speak("📡 Find-My-Cane signal received from phone! Cane is here...",
+          "📡 تم استقبال إشارة البحث من الجوال! العصا هنا...")
+    print("*"*50 + "\n")
     
-    distance = (time.ticks_diff(signalon, signaloff) * 0.0343) / 2
-    return int(round(distance))
+    for _ in range(5):
+        vib_up.value(1); vib_down.value(1); vib_left.value(1); vib_right.value(1)
+        beep(2000, 0.15)
+        vib_up.value(0); vib_down.value(0); vib_left.value(0); vib_right.value(0)
+        time.sleep(0.1)
 
-def alert(freq, duration_ms):
-    """Trigger synchronized audio and haptic/visual feedback."""
-    vibration_led.high()
-    buzzer.freq(freq)
-    buzzer.duty_u16(32768)
-    time.sleep_ms(duration_ms)
-    buzzer.duty_u16(0)
-    vibration_led.low()
-
-def speak_guidance(en_msg, ar_msg, tone_pattern):
-    """Deliver detailed context-aware voice guidance and directional earcons."""
-    if language == "EN":
-        print(f'[SMART VOICE - EN]: "{en_msg}"')
-    else:
-        print(f'[توجيه صوتي - AR]: "{ar_msg}"')
-        
-    for freq, dur in tone_pattern:
-        alert(freq, dur)
-        time.sleep_ms(50)
-
-print("Smart White Cane v2.5 (Enhanced Spatial Guidance) Started")
+# ==========================================
+# 3. Main Execution Loop
+# ==========================================
+print("✅ Smart White Cane V3.0 System Initialized")
+speak("Smart White Cane Version 3.0 is ready.", "النظام جاهز للعمل.")
 
 while True:
-    # Check language toggle button
-    if lang_button.value() == 0:
+    # 1. Check Language Toggle Button
+    if btn_lang.value() == 0:
         language = "AR" if language == "EN" else "EN"
-        print("System Language: English" if language == "EN" else "لغة النظام: العربية")
-        time.sleep_ms(300)
-        
-    # Read distances from all three sensors
-    front = get_distance(front_trig, front_echo)
-    left = get_distance(left_trig, left_echo)
-    right = get_distance(right_trig, right_echo)
-    
-    # Real-time telemetry log
-    if language == "EN":
-        print(f"[EN] Front: {front}cm | Left: {left}cm | Right: {right}cm")
+        speak("Switched to English language", "تم التحويل إلى اللغة العربية")
+        time.sleep(0.4)
+
+    # 2. Check Manual Emergency SOS Button
+    if btn_sos.value() == 0:
+        trigger_sos("Manual SOS Button Pressed", "ضغط زر الاستغاثة اليدوي")
+        time.sleep(0.5)
+
+    # 3. Check Find-My-Cane Mobile App Trigger
+    if btn_find.value() == 0:
+        find_my_cane()
+        time.sleep(0.5)
+
+    # 4. Measure Distances (Head-level & Ground-level)
+    dist_low = get_distance(trig_low, echo_low)
+    dist_high = get_distance(trig_high, echo_high)
+
+    # Reset Haptic Matrix
+    vib_up.value(0)
+    vib_down.value(0)
+    vib_left.value(0)
+    vib_right.value(0)
+
+    # Head-level Obstacle Alert
+    if dist_high < 80:
+        vib_up.value(1)
+        speak(f"Caution! Head-level obstacle at {int(dist_high)} cm",
+              f"انتبه! عائق مرتفع على بعد {int(dist_high)} سم")
+        beep(1000, 0.1)
+
+    # Ground Obstacle + AI Object & Color Recognition
+    if dist_low < 100:
+        vib_down.value(1)
+        vib_left.value(1)
+        vib_right.value(1)
+        obj_en, obj_ar = random.choice(mock_ai_objects)
+        speak(f"Obstacle ahead at {int(dist_low)} cm: {obj_en}",
+              f"عائق أمامك على بعد {int(dist_low)} سم: {obj_ar}")
+        beep(700, 0.1)
+
+    # 5. Wet / Slippery Surface Detection
+    slip_val = slip_sensor.read()
+    if slip_val > 2500:
+        vib_down.value(1)
+        speak("Warning! Wet or slippery surface detected ahead",
+              "تحذير! الأرضية مبللة أو زلقة أمامك")
+        beep(1200, 0.15)
+
+    # 6. Automatic Fall Detection (Horizontal tilt > 4 seconds)
+    tilt_val = tilt_sensor.read()
+    if tilt_val > 3000:
+        if fall_start_time is None:
+            fall_start_time = time.time()
+        elif time.time() - fall_start_time >= 4:
+            trigger_sos("Automatic Fall Detected", "اكتشاف سقوط العصا تلقائياً")
+            fall_start_time = None
     else:
-        print(f"[AR] أمام: {front}سم | يسار: {left}سم | يمين: {right}سم")
-    
-    # Priority 1: Critical Front Danger
-    if front < CRITICAL_DISTANCE:
-        speak_guidance(
-            f"CRITICAL ALERT: Obstacle {front} centimeters ahead. Stop immediately!",
-            f"تنبيه حرج: عائق على بعد {front} سنتيمتر. توقف فوراً!",
-            [(1000, 90), (1000, 90), (1000, 90)]
-        )
-        
-    # Priority 2: Front Obstacle & Smart Path Finding
-    elif front < SAFE_DISTANCE:
-        if left >= right and left >= SAFE_DISTANCE:
-            speak_guidance(
-                f"Obstacle {front} centimeters ahead. Turn left, clear path for {left} centimeters.",
-                f"عائق على بعد {front} سنتيمتر. اتجه يساراً، المسار آمن لمسافة {left} سنتيمتر.",
-                [(750, 120), (500, 180)]
-            )
-        elif right > left and right >= SAFE_DISTANCE:
-            speak_guidance(
-                f"Obstacle {front} centimeters ahead. Turn right, clear path for {right} centimeters.",
-                f"عائق على بعد {front} سنتيمتر. اتجه يميناً، المسار آمن لمسافة {right} سنتيمتر.",
-                [(500, 120), (750, 180)]
-            )
-        else:
-            speak_guidance(
-                f"Path blocked at {front} centimeters. Narrow space on both sides, turn around.",
-                f"المسار مغلق على بعد {front} سنتيمتر. الجوانب ضيقة، استدر للخلف.",
-                [(900, 350)]
-            )
-            
-    # Priority 3: Side Proximity Protection (Even when front path is clear)
-    elif left < SIDE_WARNING_DISTANCE:
-        speak_guidance(
-            f"Caution: Object {left} centimeters on your left. Step slightly right.",
-            f"انتباه: جسم على يسارك بمسافة {left} سنتيمتر. ابتعد قليلاً لليمين.",
-            [(650, 100)]
-        )
-    elif right < SIDE_WARNING_DISTANCE:
-        speak_guidance(
-            f"Caution: Object {right} centimeters on your right. Step slightly left.",
-            f"انتباه: جسم على يمينك بمسافة {right} سنتيمتر. ابتعد قليلاً لليسار.",
-            [(550, 100)]
-        )
-        
-    time.sleep_ms(300)
+        fall_start_time = None
+
+    time.sleep(0.3)
